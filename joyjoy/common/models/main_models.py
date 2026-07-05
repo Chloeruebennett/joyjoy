@@ -1,0 +1,581 @@
+"""
+Copyright 2021-2026 AstreaTSS.
+This file is part of PYTHIA.
+
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+"""
+
+import collections
+import os
+from enum import Enum, IntEnum
+
+import discord
+import typing_extensions as typing
+from tortoise import Model, fields
+from tortoise.connection import get_connection
+from tortoise.expressions import Q
+
+from common.models.gacha_models import GachaConfig, Rarity
+from common.models.utils import generate_regexp, guild_id_model, yesno_friendly_str
+
+__all__ = (
+    "FIND_TRUTH_BULLET_STR",
+    "BulletConfig",
+    "BulletThreadBehavior",
+    "DiceConfig",
+    "DiceEntry",
+    "GuildConfig",
+    "GuildConfigInclude",
+    "InvestigationType",
+    "ItemHash",
+    "ItemRelation",
+    "ItemsConfig",
+    "ItemsRelationType",
+    "ItemsSystemItem",
+    "MessageConfig",
+    "MessageLink",
+    "MessageMode",
+    "MessageThread",
+    "Names",
+    "TruthBullet",
+    "TruthBulletAlias",
+)
+
+
+class BulletThreadBehavior(IntEnum):
+    """
+    DISTINCT: Threads are treated distinctly from their parent channel.
+    PARENT: Threads are treated as their parent channel.
+    """
+
+    DISTINCT = 1
+    PARENT = 2
+
+
+class ItemsRelationType(str, Enum):
+    CHANNEL = "CHANNEL"
+    USER = "USER"
+
+
+class InvestigationType(IntEnum):
+    DEFAULT = 1
+    COMMAND_ONLY = 2
+
+
+class MessageMode(IntEnum):
+    CLASSIC = 1
+    PUBLIC_THREAD = 2
+    PRIVATE_THREAD = 3
+
+    def is_thread(self) -> bool:
+        return self in {MessageMode.PUBLIC_THREAD, MessageMode.PRIVATE_THREAD}
+
+    def display_name(self) -> str:
+        match self:
+            case MessageMode.CLASSIC:
+                return "Classic (All Messages in One Channel)"
+            case MessageMode.PUBLIC_THREAD:
+                return "Public Thread Per User"
+            case MessageMode.PRIVATE_THREAD:
+                return "Private Thread Per User"
+            case _:
+                raise ValueError(f"Invalid message mode: {self}")
+
+
+class Names(Model):
+    guild: fields.OneToOneRelation["GuildConfig"] = fields.OneToOneField(
+        "models.GuildConfig", "names", pk=True
+    )
+    singular_bullet = fields.TextField(default="Truth Bullet")
+    plural_bullet = fields.TextField(default="Truth Bullets")
+    singular_truth_bullet_finder = fields.TextField(default="{{bullet_name}} Finder")
+    plural_truth_bullet_finder = fields.TextField(default="{{bullet_name}} Finders")
+    best_bullet_finder = fields.TextField(default="Best {{bullet_finder}}")
+    singular_currency_name = fields.TextField(default="Coin")
+    plural_currency_name = fields.TextField(default="Coins")
+    gacha_common_name = fields.TextField(default="Common")
+    gacha_uncommon_name = fields.TextField(default="Uncommon")
+    gacha_rare_name = fields.TextField(default="Rare")
+    gacha_epic_name = fields.TextField(default="Epic")
+    gacha_legendary_name = fields.TextField(default="***__Legendary__***")
+
+    class Meta:
+        table = "thianames"
+
+    def currency_name(self, amount: int) -> str:
+        return self.singular_currency_name if amount == 1 else self.plural_currency_name
+
+    def rarity_name(self, rarity: "Rarity") -> str:
+        match rarity:
+            case Rarity.COMMON:
+                return self.gacha_common_name
+            case Rarity.UNCOMMON:
+                return self.gacha_uncommon_name
+            case Rarity.RARE:
+                return self.gacha_rare_name
+            case Rarity.EPIC:
+                return self.gacha_epic_name
+            case Rarity.LEGENDARY:
+                return self.gacha_legendary_name
+            case _:
+                raise ValueError(f"Invalid rarity: {rarity}")
+
+
+class BulletConfig(Model):
+    guild: fields.OneToOneRelation["GuildConfig"] = fields.OneToOneField(
+        "models.GuildConfig", "bullets", pk=True
+    )
+    bullet_chan_id: fields.Field[int | None] = fields.BigIntField(null=True)
+    best_bullet_finder_role: fields.Field[int | None] = fields.BigIntField(null=True)
+    bullets_enabled: fields.Field[bool] = fields.BooleanField(default=False)
+    investigation_type: fields.Field[int] = fields.SmallIntField(default=1)
+    show_best_finders: fields.Field[bool] = fields.BooleanField(default=True)
+    thread_behavior = fields.IntEnumField(
+        BulletThreadBehavior, default=BulletThreadBehavior.DISTINCT
+    )
+
+    @property
+    def thread_behavior_desc(self) -> str:
+        match self.thread_behavior:
+            case BulletThreadBehavior.DISTINCT:
+                return "Distinct entity from parent channel"
+            case BulletThreadBehavior.PARENT:
+                return "Treated as the parent channel"
+            case _:
+                raise ValueError(f"Invalid thread behavior: {self.thread_behavior}")
+
+    @property
+    def investigation_type_enum(self) -> InvestigationType:
+        return InvestigationType(self.investigation_type)
+
+    class Meta:
+        table = "thiabulletconfig"
+
+
+class ItemsConfig(Model):
+    guild: fields.OneToOneRelation["GuildConfig"] = fields.OneToOneField(
+        "models.GuildConfig", "items", pk=True
+    )
+    enabled: fields.Field[bool] = fields.BooleanField(default=False)
+    autosuggest: fields.Field[bool] = fields.BooleanField(default=True)
+
+    items: fields.ReverseRelation["ItemsSystemItem"]
+
+    class Meta:
+        table = "thiaitemsconfig"
+
+
+class _ItemRelationHash:
+    __slots__ = ("id", "relation")
+
+    def __init__(self, relation: "ItemRelation") -> None:
+        self.relation = relation
+        self.id = relation.object_id
+
+    def __hash__(self) -> int:
+        return self.id
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, _ItemRelationHash) and self.id == other.id
+
+
+class ItemHash:
+    __slots__ = ("id", "item")
+
+    def __init__(self, item: "ItemsSystemItem") -> None:
+        self.item = item
+        self.id = item.id
+
+    def __hash__(self) -> int:
+        return self.id
+
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, ItemHash) and self.id == other.id
+
+
+@guild_id_model
+class ItemsSystemItem(Model):
+    id: fields.Field[int] = fields.IntField(pk=True)
+    guild: fields.ForeignKeyRelation[ItemsConfig] = fields.ForeignKeyField(
+        "models.ItemsConfig", "items", db_index=True
+    )
+    name = fields.TextField()
+    description = fields.TextField()
+    image: fields.Field[str | None] = fields.TextField(null=True)
+    takeable: fields.Field[bool] = fields.BooleanField(default=True)
+
+    relations: fields.ReverseRelation["ItemRelation"]
+
+    class Meta:
+        table = "thiaitemssystemitems"
+
+    def embeds(self, *, count: int | None = None) -> list[discord.Embed]:
+        embeds: list[discord.Embed] = []
+
+        embed = discord.Embed(
+            description=(
+                f"# {self.name}{f' (x{count})' if count else ''}\n{self.description}"
+            ),
+            color=discord.Color(int(os.environ["BOT_COLOR"])),
+        )
+        if self.image:
+            embed.set_thumbnail(url=self.image)
+
+        embed.set_footer(text=f"Takeable: {yesno_friendly_str(self.takeable)}")
+
+        embeds.append(embed)
+
+        if self.relations._fetched and self.relations:
+            relation_counter: collections.Counter[_ItemRelationHash] = (
+                collections.Counter()
+            )
+
+            for relation in self.relations:
+                relation_counter[_ItemRelationHash(relation)] += 1
+
+            relation_data = sorted(
+                (
+                    (relation.relation, count)
+                    for relation, count in relation_counter.items()
+                ),
+                key=lambda x: x[0].object_type,
+            )
+
+            str_builder: list[str] = []
+            character_count = 0
+
+            for entry, count in relation_data:
+                string_to_use = (
+                    f"- <#{entry.object_id}> (x{count})"
+                    if entry.object_type == ItemsRelationType.CHANNEL
+                    else f"- <@{entry.object_id}> (x{count})"
+                )
+
+                if character_count + len(string_to_use) > 4000:
+                    embeds.append(
+                        discord.Embed(
+                            description=f"# {self.name} - Possessors\n"
+                            + "\n".join(str_builder),
+                            color=discord.Color(int(os.environ["BOT_COLOR"])),
+                        )
+                    )
+
+                    str_builder.clear()
+                    character_count = 0
+
+                str_builder.append(string_to_use)
+                character_count += len(string_to_use)
+
+            if str_builder:
+                embeds.append(
+                    discord.Embed(
+                        description=f"# {self.name} - Possessors\n"
+                        + "\n".join(str_builder),
+                        color=discord.Color(int(os.environ["BOT_COLOR"])),
+                    )
+                )
+
+        return embeds
+
+
+class ItemRelation(Model):
+    id: fields.Field[int] = fields.IntField(pk=True)
+    item: fields.ForeignKeyRelation["ItemsSystemItem"] = fields.ForeignKeyField(
+        "models.ItemsSystemItem", "relations"
+    )
+    guild_id: fields.Field[int] = fields.BigIntField(db_index=True)
+    object_id: fields.Field[int] = fields.BigIntField(db_index=True)
+    object_type = fields.CharEnumField(ItemsRelationType)
+
+    class Meta:
+        table = "thiaitemrelation"
+        indexes: typing.ClassVar[list[tuple[str]]] = [
+            ("item_id",),
+            ("guild_id",),
+            ("object_id",),
+        ]
+
+
+class MessageConfig(Model):
+    guild: fields.OneToOneRelation["GuildConfig"] = fields.OneToOneField(
+        "models.GuildConfig", "messages", pk=True
+    )
+    enabled: fields.Field[bool] = fields.BooleanField(default=False)
+    anon_enabled: fields.Field[bool] = fields.BooleanField(default=False)
+    ping_for_message: fields.Field[bool] = fields.BooleanField(default=False)
+    mode: MessageMode = fields.IntEnumField(
+        MessageMode, default=MessageMode.PUBLIC_THREAD
+    )
+
+    links: fields.ReverseRelation["MessageLink"]
+
+    class Meta:
+        table = "thiamessageconfig"
+
+
+class MessageThread(Model):
+    id: fields.Field[int] = fields.IntField(pk=True)
+    message_link: fields.ForeignKeyRelation["MessageLink"] = fields.ForeignKeyField(
+        "models.MessageLink", "threads", db_index=True
+    )
+    user_id: fields.Field[int] = fields.BigIntField(db_index=True)
+    thread_id: fields.Field[int] = fields.BigIntField()
+
+    def is_anonymous(self) -> bool:
+        return self.user_id == -1
+
+    class Meta:
+        table = "thiamessagethread"
+
+
+@guild_id_model
+class MessageLink(Model):
+    id: fields.Field[int] = fields.IntField(pk=True)
+    guild: fields.ForeignKeyRelation[MessageConfig] = fields.ForeignKeyField(
+        "models.MessageConfig", "links", db_index=True
+    )
+    user_id: fields.Field[int] = fields.BigIntField()
+    channel_id: fields.Field[int] = fields.BigIntField()
+
+    threads: fields.ReverseRelation["MessageThread"]
+
+    class Meta:
+        table = "thiamessagelink"
+        indexes: typing.ClassVar[list[tuple[str, ...]]] = [("guild_id", "user_id")]
+
+
+class DiceConfig(Model):
+    guild: fields.OneToOneRelation["GuildConfig"] = fields.OneToOneField(
+        "models.GuildConfig", "dice", pk=True
+    )
+    visible: fields.Field[bool] = fields.BooleanField(default=True)
+
+    entries: fields.ReverseRelation["DiceEntry"]
+
+    class Meta:
+        table = "thiadiceconfig"
+
+
+@guild_id_model
+class DiceEntry(Model):
+    id: fields.Field[int] = fields.IntField(pk=True)
+    guild: fields.ForeignKeyRelation[DiceConfig] = fields.ForeignKeyField(
+        "models.DiceConfig", "entries", db_index=True
+    )
+    user_id: fields.Field[int] = fields.BigIntField()
+    name = fields.TextField()
+    value = fields.TextField()
+
+    class Meta:
+        table = "thiadicenetry"
+        indexes: typing.ClassVar[list[tuple[str, ...]]] = [("guild_id", "user_id")]
+
+
+class TruthBulletAlias(Model):
+    id: fields.Field[int] = fields.IntField(pk=True)
+    bullet: fields.ForeignKeyRelation["TruthBullet"] = fields.ForeignKeyField(
+        "models.TruthBullet", "aliases", db_index=True
+    )
+    alias = fields.TextField()
+
+    class Meta:
+        table = "thiatruthbulletalias"
+        indexes: typing.ClassVar[list[tuple[str, ...]]] = [("bullet_id", "alias")]
+
+
+class TruthBullet(Model):
+    id: fields.Field[int] = fields.IntField(pk=True)
+    trigger: fields.Field[str] = fields.TextField()
+    description = fields.TextField()
+    channel_id = fields.BigIntField(db_index=True)
+    guild_id = fields.BigIntField(db_index=True)
+    found: fields.Field[bool] = fields.BooleanField(db_index=True)
+    finder: fields.Field[int | None] = fields.BigIntField(null=True)
+    hidden: fields.Field[bool] = fields.BooleanField(default=False)
+    image: fields.Field[str | None] = fields.TextField(null=True)
+
+    aliases: fields.ReverseRelation["TruthBulletAlias"]
+
+    class Meta:
+        table = "thiatruthbullets"
+
+    @property
+    def chan_mention(self) -> str:
+        return f"<#{self.channel_id}>"
+
+    def found_view(
+        self,
+        user_mention: str,
+        *,
+        singular_bullet: str | None = None,
+        context_url: str | None = None,
+    ) -> discord.ui.DesignerView:
+        text = discord.ui.TextDisplay(
+            f"# `{discord.utils.escape_markdown(self.trigger)}` -"
+            f" {self.chan_mention}\n-# Discovered at:"
+            f" {discord.utils.format_dt(discord.utils.utcnow())}\n-# Found by:"
+            f" {user_mention}\n\n{self.description}"
+        )
+
+        container = discord.ui.Container(
+            color=discord.Color(int(os.environ["BOT_COLOR"]))
+        )
+
+        if singular_bullet:
+            container.add_text(f"## {singular_bullet} Discovered")
+            container.add_separator(divider=False)
+
+        container.add_item(text)
+
+        if self.image:
+            container.add_gallery(discord.MediaGalleryItem(self.image))
+
+        if context_url:
+            container.add_separator(divider=False)
+            container.add_row(
+                discord.ui.Button(
+                    style=discord.ButtonStyle.link,
+                    label="Context",
+                    url=context_url,
+                )
+            )
+
+        return discord.ui.DesignerView(container, store=False)
+
+    @classmethod
+    async def find(
+        cls, channel_id: "discord.Snowflake", content: str
+    ) -> typing.Self | None:
+        conn = get_connection("default")
+        data = await conn.execute_query_dict(
+            FIND_TRUTH_BULLET_STR, values=[int(channel_id), content]
+        )
+        return cls(**data[0]) if data else None
+
+    @classmethod
+    async def find_exact(
+        cls, channel_id: "discord.Snowflake", content: str
+    ) -> typing.Self | None:
+        return await cls.get_or_none(
+            Q(channel_id=channel_id)
+            & (Q(trigger__iexact=content) | Q(aliases__alias__iexact=content))
+        )
+
+    @classmethod
+    async def find_via_trigger(
+        cls,
+        channel_id: "discord.Snowflake",
+        trigger: str,
+        prefetch_aliases: bool = False,
+    ) -> typing.Self | None:
+        query = cls.filter(
+            channel_id=int(channel_id),
+            trigger__iexact=trigger,
+        ).first()
+        if prefetch_aliases:
+            query = query.prefetch_related("aliases")
+        return await query
+
+    @classmethod
+    async def trigger_exists(
+        cls, channel_id: "discord.Snowflake", trigger: str
+    ) -> bool:
+        return await cls.exists(
+            Q(channel_id=channel_id)
+            & (Q(trigger__iexact=trigger) | Q(aliases__alias__iexact=trigger))
+        )
+
+
+class GuildConfigInclude(typing.TypedDict, total=False):
+    names: bool
+    bullets: bool
+    gacha: bool
+    messages: bool
+    dice: bool
+    items: bool
+
+
+class GuildConfig(Model):
+    guild_id: fields.Field[int] = fields.BigIntField(pk=True)
+    player_role: fields.Field[int | None] = fields.BigIntField(null=True)
+    enabled_beta: fields.Field[bool] = fields.BooleanField(default=False)
+
+    names: fields.OneToOneNullableRelation["Names"]
+    bullets: fields.OneToOneNullableRelation["BulletConfig"]
+    gacha: fields.OneToOneNullableRelation["GachaConfig"]
+    messages: fields.OneToOneNullableRelation["MessageConfig"]
+    dice: fields.OneToOneNullableRelation["DiceConfig"]
+    items: fields.OneToOneNullableRelation["ItemsConfig"]
+
+    class Meta:
+        table = "thiaguildconfig"
+
+    async def _fill_in_include(self, include: GuildConfigInclude | None) -> typing.Self:
+        if not include:
+            return self
+
+        for entry in include:
+            # the normal relational attributes are properties
+            # we need to change the underlying attribute instead, hence the _ prefix
+            if entry == "names" and not getattr(self, "names", True):
+                self._names = await Names.create(guild_id=self.guild_id)
+            if entry == "bullets" and not getattr(self, "bullets", True):
+                self._bullets = await BulletConfig.create(guild_id=self.guild_id)
+            if entry == "gacha" and not getattr(self, "gacha", True):
+                self._gacha = await GachaConfig.create(guild_id=self.guild_id)
+            if entry == "messages" and not getattr(self, "messages", True):
+                self._messages = await MessageConfig.create(guild_id=self.guild_id)
+            if entry == "dice" and not getattr(self, "dice", True):
+                self._dice = await DiceConfig.create(guild_id=self.guild_id)
+            if entry == "items" and not getattr(self, "items", True):
+                self._items = await ItemsConfig.create(guild_id=self.guild_id)
+
+        return self
+
+    @classmethod
+    async def fetch_create(
+        cls, guild_id: int, include: GuildConfigInclude | None = None
+    ) -> typing.Self:
+        queryset = cls.get_or_none(guild_id=guild_id)
+        if include:
+            queryset = queryset.prefetch_related(*include.keys())
+        config = await queryset
+
+        if not config:
+            config = await cls.create(guild_id=guild_id)
+            if include:
+                for field in include.keys():
+                    setattr(config, f"_{field}", None)
+
+        return await config._fill_in_include(include)
+
+    @classmethod
+    async def fetch(
+        cls, guild_id: int, include: GuildConfigInclude
+    ) -> typing.Self | None:
+        config = await cls.get_or_none(guild_id=guild_id).prefetch_related(
+            *include.keys()
+        )
+        return await config._fill_in_include(include) if config else config
+
+
+FIND_TRUTH_BULLET_STR: typing.Final[str] = f"""
+SELECT
+    {', '.join(f"thiatruthbullets.{f}" for f in TruthBullet._meta.fields)}
+FROM
+    thiatruthbullets
+LEFT JOIN
+    thiatruthbulletalias ON thiatruthbulletalias.bullet_id = thiatruthbullets.id
+WHERE
+    channel_id = $1
+    AND found = false
+    AND (
+        $2 ILIKE CONCAT('%', {generate_regexp('trigger')}, '%')
+        OR (
+            thiatruthbulletalias.alias IS NOT NULL
+            AND $2 ILIKE CONCAT('%', {generate_regexp('thiatruthbulletalias.alias')}, '%')
+        )
+    );
+""".strip()  # noqa: S608

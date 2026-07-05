@@ -1,0 +1,37 @@
+<p align="center">
+  <img src="https://pythia.astrea.cc/assets/pythia_banner.jpg" alt="PYTHIA's Banner" width="700"/>
+</p>
+
+<p align="center">
+  <a href="https://pythia.astrea.cc/usage">
+    <img src="https://shieldcn.dev/badge/Usage%20Guides-874bd1.svg?logo=wikibooks" alt="Usage Guides">
+  </a>
+  <a href="https://pythia.astrea.cc/setup">
+    <img src="https://shieldcn.dev/badge/Server%20Setup%20Guides-5e4b8d.svg?logo=bookstack" alt="Server Setup Guides">
+  </a>
+  <a href="https://discord.gg/NSdetwGjpK">
+    <img src="https://shieldcn.dev/badge/Support%20Server-5865F2.svg?logo=discord" alt="Join Support Server">
+  </a>
+  <a href="https://ko-fi.com/astreatss">
+    <img src="https://shieldcn.dev/badge/Ko--Fi-e5e5e5.svg?logo=kofi&logoColor=ff6433" alt="Donate on Ko-Fi">
+  </a>
+</p>
+
+> "Hello. I am PYTHIA, the Ultimate Robotic Assistant. I look forward to assisting you in whatever tasks you may have."
+
+PYTHIA is a Discord bot meant to assist with various parts of running Danganronpa/Killing Game RPs. Currently, it assists with:
+- The process of creating and running BDA investigations through an intuitive investigation system.
+- Rolling and managing dice through the dice system.
+- Making a gachapon with unique items with rarities and adjustable rules through the gacha system.
+- Allowing for general investigations and the discovery of items around places through the items system.
+- Managing simple messaging between players through the messaging system.
+
+<p align="center">
+  <i>For more information, please <a href="https://pythia.astrea.cc">check the official website.</a></i>
+</p>
+
+### Copyright and License Notice
+
+Copyright 2021-2026 AstreaTSS.
+
+Unless otherwise stated, all files in this repository are licensed under the Mozilla Public License v2.0. A copy of the license is available in the [LICENSE](LICENSE) file.
